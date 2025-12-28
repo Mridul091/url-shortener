@@ -5,6 +5,7 @@ from app.db.model import URL
 from app.schemas.url import URLCreate, URLResponse
 from app.db.database import SessionLocal
 from app.services.shortner import encode, decode
+from app.cache.redis import redis_client
 import os
 
 router = APIRouter()
@@ -30,14 +31,27 @@ def shorten_url(payload: URLCreate, db: Session = Depends(get_db)):
     base_url = os.getenv("BASE_URL")
     return {"shortCode": f"{base_url}/{short_code}"}
 
+CACHE_TTL = 60 * 60 * 24 
 @router.get("/{short_code}")
 def redirect_to_url(short_code: str, db: Session = Depends(get_db)):
-    url_id = decode(short_code)
+
+    cached_url = redis_client.get(short_code)
+    if cached_url:
+        return RedirectResponse(url=cached_url, status_code=302)
+    
+    try:
+        url_id = decode(short_code)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Invalid URL")
+
+    
     url = db.query(URL).filter(URL.url_id == url_id).first()
     
     if not url:
         raise HTTPException(status_code=404, detail="URL not found")
+
+    redis_client.set(short_code, url.long_url, ex=CACHE_TTL)
     
-    return RedirectResponse(url=url.long_url, status_code=307)
+    return RedirectResponse(url=url.long_url, status_code=302)
 
 
